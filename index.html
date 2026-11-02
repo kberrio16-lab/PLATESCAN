@@ -124,7 +124,7 @@ drawPts();
 let log = ls('log', []), queue = ls('queue', []);
 function register(placa) {
   const p = cfg.pts[cfg.me], row = { t: new Date().toISOString(), p: placa, m: p.t, n: p.n };
-  log.unshift(row); log = log.slice(0, 3000); queue.push(row); sv('log', log); sv('queue', queue);
+  log.unshift(log); log = log.slice(0, 3000); queue.push(row); sv('log', log); sv('queue', queue);
   flush();
 }
 async function flush() {
@@ -157,31 +157,43 @@ $('go').onclick = async () => {
   refresh();
   const p = cfg.pts[cfg.me];
   $('tg').textContent = p.t === 'entrada' ? 'Entrada' : 'Salida'; $('tg').className = 'tag ' + p.t; $('nm').textContent = p.n;
+  
   $('setup').style.display = 'none'; $('run').style.display = 'flex';
+  $('st').textContent = 'Iniciando motor OCR (descargando datos)…';
+
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false });
+    if (!worker) {
+      worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.0/tesseract-core.wasm.js'
+      });
+      await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: '7' });
+    }
+
+    $('st').textContent = 'Abriendo cámara…';
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false });
     $('v').srcObject = stream; await $('v').play();
-  } catch(e) { $('st').textContent = 'No se pudo abrir la cámara. Revisa el permiso y que la página use https.'; return; }
+  } catch(e) { 
+    $('st').textContent = 'Error: Revisa permisos de cámara o conexión a internet.'; 
+    return; 
+  }
+
   try { wl = await navigator.wakeLock.request('screen'); } catch(e) {}
   
-  if (!worker) {
-    $('st').textContent = 'Descargando motor OCR…';
-    worker = await Tesseract.createWorker('eng', 1, {
-      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
-      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.0/tesseract-core.wasm.js'
-    });
-    await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: '7' });
-  }
-  
-  running = true; $('st').textContent = 'Buscando placas…'; flush(); tick();
+  running = true; 
+  $('st').textContent = 'Buscando placas…'; 
+  flush(); 
+  tick();
 };
+
 $('stop').onclick = () => {
   running = false;
   if (stream) stream.getTracks().forEach(t => t.stop());
   if (wl) wl.release().catch(() => {});
   $('run').style.display = 'none'; $('setup').style.display = 'block';
 };
+
 document.addEventListener('visibilitychange', async () => {
   if (running && document.visibilityState === 'visible') { try { wl = await navigator.wakeLock.request('screen'); } catch(e) {} }
 });
