@@ -151,7 +151,7 @@ $('exp').onclick = () => {
 
 // ---------- captura continua ----------
 let running = false, busy = false, stream = null, worker = null, wl = null;
-const seen = {}, lastReg = {};
+const lastReg = {};
 
 $('go').onclick = async () => {
   refresh();
@@ -163,11 +163,17 @@ $('go').onclick = async () => {
     $('v').srcObject = stream; await $('v').play();
   } catch(e) { $('st').textContent = 'No se pudo abrir la cámara. Revisa el permiso y que la página use https.'; return; }
   try { wl = await navigator.wakeLock.request('screen'); } catch(e) {}
-  $('st').textContent = 'Preparando lector…';
+  
   if (!worker) {
-    worker = await Tesseract.createWorker('eng');
+    $('st').textContent = 'Descargando motor OCR…';
+    worker = await Tesseract.createWorker('eng', 1, {
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.0/tesseract-core.wasm.js'
+    });
     await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: '7' });
   }
+  
   running = true; $('st').textContent = 'Buscando placas…'; flush(); tick();
 };
 $('stop').onclick = () => {
@@ -206,11 +212,11 @@ async function scan() {
   const t = (data.text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   let m; try { m = t.match(new RegExp(cfg.re)); } catch(e) { m = null; }
   if (!m) return;
+  
   const p = m[0], now = Date.now();
-  seen[p] = (seen[p] || []).filter(x => now - x < 5000); seen[p].push(now);
-  if (seen[p].length < 2) return;                         // debe leerse 2 veces seguidas
   if (lastReg[p] && now - lastReg[p] < 120000) return;    // no repite la misma placa en 2 min
   lastReg[p] = now; register(p);
+  
   $('gd').classList.add('ok'); setTimeout(() => $('gd').classList.remove('ok'), 1200);
   if (navigator.vibrate) navigator.vibrate(200);
   $('last').innerHTML = p + '<small>' + new Date().toLocaleTimeString('es-CO') + '</small>';
