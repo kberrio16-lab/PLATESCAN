@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Control de Placas - Plate Recognizer API</title>
+<title>Control de Placas Automático</title>
 <style>
 :root{--bg:#eceae4;--card:#fff;--ink:#1d2430;--mute:#6b7280;--in:#1f7a4d;--out:#c2571a;--line:#d6d3ca;--plate:#f6c515}
 @media (prefers-color-scheme:dark){:root{--bg:#14181f;--card:#1e242e;--ink:#eef0f3;--mute:#98a1ae;--in:#4cc38a;--out:#f08b4e;--line:#2f3844}}
@@ -28,48 +28,44 @@ button{cursor:pointer}
 .cam{position:relative;flex:1;min-height:0}
 video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .guide{position:absolute;left:10%;right:10%;top:36%;height:28%;border:3px solid var(--plate);border-radius:8px;box-shadow:0 0 0 999px rgba(0,0,0,.45);transition:border-color .2s}
-.guide.ok{border-color:#4cc38a}
+.guide.ok{border-color:#4cc38a;border-width:6px}
 .bot{padding:10px 14px;background:#111}
 .bot p{margin:0 0 6px;color:#c4c9d1;font-size:14px}
-.last{font:800 22px "Arial Narrow",sans-serif;letter-spacing:.08em;margin:0 0 8px}
+.last{font:800 22px "Arial Narrow",sans-serif;letter-spacing:.08em;margin:0 0 8px;color:#4cc38a}
 .last small{font:14px system-ui;color:#98a1ae;letter-spacing:0;margin-left:8px}
 .bot .row{display:flex;gap:8px}.bot .ghost{flex:1;background:#222;color:#fff;border-color:#333}
 </style>
 </head>
 <body>
 <main id="setup">
-  <h1>Puntos de control (Plate Recognizer API)</h1>
+  <h1>Puntos de Control Automático</h1>
 
   <h2>1. Credenciales de la API</h2>
   <label for="token">API Token de Plate Recognizer</label>
-  <input id="token" placeholder="Pega tu token aquí (Token xyz...)" type="password">
-  <p class="hint">Regístrate gratis en platerecognizer.com para obtener tu Token.</p>
+  <input id="token" placeholder="Pega tu token aquí" type="password">
 
-  <h2>2. Define los puntos</h2>
+  <h2>2. Configurar Puntos de Control</h2>
   <div id="pts"></div>
   <button class="ghost" id="addPt">+ Agregar punto</button>
 
-  <h2>3. Conexión a Google Sheets</h2>
-  <label for="url">URL de Google Sheets (Apps Script)</label>
-  <input id="url" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
-  <label for="country">Código de país / región (Opcional)</label>
-  <input id="country" placeholder="co (para Colombia), mx, us, etc." autocapitalize="lowercase">
+  <h2>3. Filtros opcionales</h2>
+  <label for="country">Código de país / región</label>
+  <input id="country" placeholder="co (Colombia), mx, us, etc." autocapitalize="lowercase">
 
   <h2>4. ¿Qué punto es este teléfono?</h2>
   <select id="me"></select>
-  <button class="big" id="go">Iniciar lector</button>
-  <button class="ghost" id="exp" style="width:100%;margin-top:8px">Descargar registro (Excel)</button>
+  <button class="big" id="go">Iniciar Modo Automático</button>
+  <button class="ghost" id="exp" style="width:100%;margin-top:8px;background:#1f7a4d;color:#fff;font-weight:bold">Descargar Registro Local (Excel / CSV)</button>
 </main>
 
 <section id="run">
-  <div class="top"><span class="tag" id="tg"></span><b id="nm"></b><span class="hint" id="pend" style="margin-left:auto"></span></div>
+  <div class="top"><span class="tag" id="tg"></span><b id="nm"></b><span class="hint" id="count" style="margin-left:auto">0 registros</span></div>
   <div class="cam"><video id="v" playsinline muted></video><div class="guide" id="gd"></div></div>
   <div class="bot">
-    <p id="st">Listo para escanear</p>
+    <p id="st">Escaneando automáticamente…</p>
     <p class="last" id="last"></p>
     <div class="row">
-      <button class="ghost" id="snap" style="background:#4cc38a;color:#000;font-weight:bold;flex:2">CAPTURAR Y LEER PLACA</button>
-      <button class="ghost" id="stop">Detener</button>
+      <button class="ghost" id="stop">Detener Lector</button>
     </div>
   </div>
 </section>
@@ -79,9 +75,11 @@ const $ = id => document.getElementById(id);
 const ls = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch(e) { return d; } };
 const sv = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) {} };
 
-let cfg = ls('cfg_cloud', { token: '', url: '', country: 'co', me: 0, pts: [{ n: 'Entrada principal', t: 'entrada' }, { n: 'Salida principal', t: 'salida' }] });
+let cfg = ls('cfg_auto', { token: '', country: 'co', me: 0, pts: [{ n: 'Entrada Principal', t: 'entrada' }, { n: 'Salida Principal', t: 'salida' }] });
+let log = ls('log_auto', []);
+let lastRegTime = {}; // Control de duplicados por tiempo
 
-// ---------- interfaz de configuración ----------
+// ---------- Interfaz de Configuración ----------
 function drawPts() {
   $('pts').innerHTML = '';
   cfg.pts.forEach((p, i) => {
@@ -96,103 +94,163 @@ function drawPts() {
   });
   refresh();
 }
+
 function refresh() {
   cfg.token = $('token').value.trim();
-  cfg.url = $('url').value.trim();
   cfg.country = $('country').value.trim().toLowerCase();
   const keep = Math.min(cfg.me, cfg.pts.length - 1);
   $('me').innerHTML = cfg.pts.map((p, i) => '<option value="' + i + '">' + (p.n || 'Sin nombre').replace(/</g, '&lt;') + ' (' + p.t + ')</option>').join('');
   $('me').value = keep; cfg.me = keep;
-  sv('cfg_cloud', cfg);
+  sv('cfg_auto', cfg);
 }
+
 $('addPt').onclick = () => { cfg.pts.push({ n: 'Punto ' + (cfg.pts.length + 1), t: 'entrada' }); drawPts(); };
-$('token').value = cfg.token; $('url').value = cfg.url; $('country').value = cfg.country;
-$('token').oninput = $('url').oninput = $('country').oninput = refresh;
-$('me').onchange = () => { cfg.me = +$('me').value; sv('cfg_cloud', cfg); };
+$('token').value = cfg.token; $('country').value = cfg.country;
+$('token').oninput = $('country').oninput = refresh;
+$('me').onchange = () => { cfg.me = +$('me').value; sv('cfg_auto', cfg); };
 drawPts();
 
-// ---------- registro y envío ----------
-let log = ls('log', []), queue = ls('queue', []);
+// ---------- Registro Local & Descarga de Excel ----------
 function register(placa) {
-  const p = cfg.pts[cfg.me], row = { t: new Date().toISOString(), p: placa, m: p.t, n: p.n };
-  log.unshift(row); log = log.slice(0, 3000); queue.push(row); sv('log', log); sv('queue', queue);
-  flush();
-}
-async function flush() {
-  $('pend').textContent = queue.length ? queue.length + ' sin enviar' : '';
-  if (!cfg.url || !queue.length || flush.busy) return;
-  flush.busy = true;
-  const batch = queue.slice();
-  try {
-    await fetch(cfg.url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ rows: batch }) });
-    queue = queue.slice(batch.length); sv('queue', queue);
-  } catch(e) {}
-  flush.busy = false; $('pend').textContent = queue.length ? queue.length + ' sin enviar' : '';
+  const p = cfg.pts[cfg.me];
+  const now = new Date();
+  const row = {
+    fecha: now.toLocaleDateString('es-CO'),
+    hora: now.toLocaleTimeString('es-CO'),
+    placa: placa,
+    tipo: p.t.toUpperCase(),
+    punto: p.n,
+    timestamp: now.getTime()
+  };
+  log.unshift(row);
+  log = log.slice(0, 5000); // Guardar hasta 5000 registros
+  sv('log_auto', log);
+  updateCounter();
 }
 
-// ---------- cámara y consulta a API ----------
-let stream = null, isReading = false;
+function updateCounter() {
+  $('count').textContent = log.length + ' registrados';
+}
+updateCounter();
+
+$('exp').onclick = () => {
+  if (!log.length) { alert('Aún no hay registros guardados.'); return; }
+  const headers = ['Fecha', 'Hora', 'Placa', 'Movimiento (Entrada/Salida)', 'Nombre del Punto'];
+  const rows = log.map(r => [r.fecha, r.hora, r.placa, r.tipo, r.punto].join(';'));
+  const csvContent = '\ufeff' + [headers.join(';'), ...rows].join('\r\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `Registro_Placas_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+};
+
+// ---------- Escaneo Automático Continuo ----------
+let stream = null, running = false, busy = false, loopTimer = null;
 
 $('go').onclick = async () => {
   refresh();
-  if (!cfg.token) { alert('Por favor ingresa tu API Token de Plate Recognizer.'); return; }
+  if (!cfg.token) { alert('Ingresa tu API Token antes de iniciar.'); return; }
+  
   const p = cfg.pts[cfg.me];
-  $('tg').textContent = p.t === 'entrada' ? 'Entrada' : 'Salida'; $('tg').className = 'tag ' + p.t; $('nm').textContent = p.n;
-  $('setup').style.display = 'none'; $('run').style.display = 'flex';
+  $('tg').textContent = p.t === 'entrada' ? 'Entrada' : 'Salida'; 
+  $('tg').className = 'tag ' + p.t; 
+  $('nm').textContent = p.n;
+  
+  $('setup').style.display = 'none'; 
+  $('run').style.display = 'flex';
+  
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false });
-    $('v').srcObject = stream; await $('v').play();
-  } catch(e) { alert('No se pudo acceder a la cámara.'); return; }
+    $('v').srcObject = stream; 
+    await $('v').play();
+  } catch(e) { 
+    alert('No se pudo acceder a la cámara.'); 
+    return; 
+  }
+
+  running = true;
+  $('st').textContent = 'Buscando vehículos…';
+  autoScanLoop();
 };
 
 $('stop').onclick = () => {
+  running = false;
+  if (loopTimer) clearTimeout(loopTimer);
   if (stream) stream.getTracks().forEach(t => t.stop());
-  $('run').style.display = 'none'; $('setup').style.display = 'block';
+  $('run').style.display = 'none'; 
+  $('setup').style.display = 'block';
 };
 
-// Acción al presionar "CAPTURAR Y LEER PLACA"
-$('snap').onclick = async () => {
-  if (isReading) return;
-  isReading = true;
-  $('st').textContent = 'Analizando fotograma en la nube…';
+async function autoScanLoop() {
+  if (!running) return;
+  
+  if (!busy) {
+    busy = true;
+    await captureAndAnalyze();
+    busy = false;
+  }
+  
+  // Reintenta/captura cada 1.5 segundos (1500 ms)
+  loopTimer = setTimeout(autoScanLoop, 1500);
+}
 
+async function captureAndAnalyze() {
   const v = $('v');
+  if (!v.videoWidth) return;
+
   const canvas = document.createElement('canvas');
-  canvas.width = v.videoWidth; canvas.height = v.videoHeight;
+  canvas.width = v.videoWidth; 
+  canvas.height = v.videoHeight;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
 
-  canvas.toBlob(async (blob) => {
-    const formData = new FormData();
-    formData.append('upload', blob);
-    if (cfg.country) formData.append('regions', cfg.country); // Ej: 'co' para Colombia
+  return new Promise((resolve) => {
+    canvas.toBlob(async (blob) => {
+      const formData = new FormData();
+      formData.append('upload', blob);
+      if (cfg.country) formData.append('regions', cfg.country);
 
-    try {
-      const res = await fetch('https://api.platerecognizer.com/v1/plate-reader/', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Token ' + cfg.token
-        },
-        body: formData
-      });
+      try {
+        const res = await fetch('https://api.platerecognizer.com/v1/plate-reader/', {
+          method: 'POST',
+          headers: { 'Authorization': 'Token ' + cfg.token },
+          body: formData
+        });
 
-      const data = await res.json();
-      if (data.results && data.results.length > 0) {
-        const placa = data.results[0].plate.toUpperCase();
-        register(placa);
-        $('gd').classList.add('ok'); setTimeout(() => $('gd').classList.remove('ok'), 1200);
-        if (navigator.vibrate) navigator.vibrate(200);
-        $('last').innerHTML = placa + '<small>' + new Date().toLocaleTimeString('es-CO') + '</small>';
-        $('st').textContent = '¡Placa detectada con éxito!';
-      } else {
-        $('st').textContent = 'No se detectó ninguna placa. Intenta de nuevo.';
+        const data = await res.json();
+        if (data.results && data.results.length > 0) {
+          const placa = data.results[0].plate.toUpperCase();
+          const now = Date.now();
+
+          // Evita volver a registrar la misma placa en menos de 60 segundos (60000 ms)
+          if (!lastRegTime[placa] || (now - lastRegTime[placa] > 60000)) {
+            lastRegTime[placa] = now;
+            
+            // 1. Guardar Registro
+            register(placa);
+            
+            // 2. Feedback Visual y Táctil
+            $('gd').classList.add('ok'); 
+            setTimeout(() => $('gd').classList.remove('ok'), 1500);
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+            
+            $('last').innerHTML = `¡CAPTURA EXITOSA: ${placa}! <small>${new Date().toLocaleTimeString('es-CO')}</small>`;
+            $('st').textContent = 'Placa guardada localmente. Esperando siguiente vehículo…';
+          } else {
+            $('st').textContent = `Placa ${placa} ya registrada recientemente. Ignorando…`;
+          }
+        } else {
+          $('st').textContent = 'Buscando vehículos…';
+        }
+      } catch(err) {
+        $('st').textContent = 'Error de conexión / reintentando…';
       }
-    } catch(err) {
-      $('st').textContent = 'Error de comunicación con el servidor.';
-    }
-    isReading = false;
-  }, 'image/jpeg', 0.85);
-};
+      resolve();
+    }, 'image/jpeg', 0.85);
+  });
+}
 </script>
 </body>
 </html>
