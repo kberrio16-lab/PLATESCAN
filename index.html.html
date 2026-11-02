@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Puntos de control de placas</title>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+:root{--bg:#eceae4;--card:#fff;--ink:#1d2430;--mute:#6b7280;--in:#1f7a4d;--out:#c2571a;--line:#d6d3ca;--plate:#f6c515}
+@media (prefers-color-scheme:dark){:root{--bg:#14181f;--card:#1e242e;--ink:#eef0f3;--mute:#98a1ae;--in:#4cc38a;--out:#f08b4e;--line:#2f3844}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+main{max-width:520px;margin:0 auto;padding:14px}
+h1{font-size:20px;margin:6px 0 12px} h2{font-size:16px;margin:20px 0 8px}
+label{display:block;font-size:14px;color:var(--mute);margin:10px 0 4px}
+input,select,button{font:inherit}
+input,select{width:100%;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+button{cursor:pointer}
+.big{width:100%;padding:16px;border:0;border-radius:10px;background:var(--ink);color:var(--bg);font-weight:700;font-size:17px;margin-top:14px}
+.ghost{padding:11px 14px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:10px}
+.pt{display:grid;grid-template-columns:1fr 110px 40px;gap:6px;margin-bottom:6px}
+.pt button{border:0;background:none;color:var(--mute);font-size:22px}
+.hint{color:var(--mute);font-size:14px}
+.tag{font-weight:700;font-size:13px;padding:3px 8px;border-radius:6px;color:#fff;display:inline-block}
+.tag.entrada{background:var(--in)}.tag.salida{background:var(--out)}
+#run{display:none;position:fixed;inset:0;background:#000;color:#fff;flex-direction:column;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+.top{display:flex;align-items:center;gap:10px;padding:10px 14px}
+.top b{font-size:18px}
+.cam{position:relative;flex:1;min-height:0}
+video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.guide{position:absolute;left:10%;right:10%;top:36%;height:28%;border:3px solid var(--plate);border-radius:8px;box-shadow:0 0 0 999px rgba(0,0,0,.45);transition:border-color .2s}
+.guide.ok{border-color:#4cc38a}
+.bot{padding:10px 14px;background:#111}
+.bot p{margin:0 0 6px;color:#c4c9d1;font-size:14px}
+.last{font:800 22px "Arial Narrow",sans-serif;letter-spacing:.08em;margin:0 0 8px}
+.last small{font:14px system-ui;color:#98a1ae;letter-spacing:0;margin-left:8px}
+.bot .row{display:flex;gap:8px}.bot .ghost{flex:1;background:#222;color:#fff;border-color:#333}
+</style>
+</head>
+<body>
+<main id="setup">
+  <h1>Puntos de control</h1>
+
+  <h2>1. Define los puntos</h2>
+  <p class="hint">Un punto = un teléfono. Agrega tantos como necesites y ponles nombre.</p>
+  <div id="pts"></div>
+  <button class="ghost" id="addPt">+ Agregar punto</button>
+
+  <h2>2. Conexión a la hoja de cálculo</h2>
+  <label for="url">URL de Google Sheets (Apps Script)</label>
+  <input id="url" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url">
+  <label for="re">Formato de placa válido (expresión regular)</label>
+  <input id="re" autocapitalize="characters">
+  <p class="hint">Por defecto: 3 letras + 2 números + 1 letra o número.</p>
+
+  <h2>3. Pasa esta configuración a los demás teléfonos</h2>
+  <input id="share" readonly>
+  <button class="ghost" id="copy" style="margin-top:6px">Copiar enlace</button>
+  <p class="hint">Abre este enlace en cada teléfono: ya traerá los puntos y la URL.</p>
+
+  <h2>4. ¿Qué punto es este teléfono?</h2>
+  <select id="me"></select>
+  <button class="big" id="go">Iniciar captura</button>
+  <button class="ghost" id="exp" style="width:100%;margin-top:8px">Descargar registro de este teléfono (Excel)</button>
+</main>
+
+<section id="run">
+  <div class="top"><span class="tag" id="tg"></span><b id="nm"></b><span class="hint" id="pend" style="margin-left:auto"></span></div>
+  <div class="cam"><video id="v" playsinline muted></video><div class="guide" id="gd"></div></div>
+  <div class="bot">
+    <p id="st">Iniciando…</p>
+    <p class="last" id="last"></p>
+    <div class="row"><button class="ghost" id="stop">Detener</button></div>
+  </div>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const ls = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch(e) { return d; } };
+const sv = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) {} };
+
+let cfg = ls('cfg', { url: '', re: '[A-Z]{3}\\d{2}[A-Z0-9]', me: 0, pts: [{ n: 'Entrada principal', t: 'entrada' }, { n: 'Salida principal', t: 'salida' }] });
+
+// importar configuración desde el enlace compartido
+if (location.hash.length > 1) {
+  try {
+    const c = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
+    cfg = { ...cfg, url: c.url || '', re: c.re || cfg.re, pts: c.pts, me: 0 };
+    sv('cfg', cfg); history.replaceState(null, '', location.pathname);
+  } catch(e) {}
+}
+
+// ---------- configuración ----------
+function drawPts() {
+  $('pts').innerHTML = '';
+  cfg.pts.forEach((p, i) => {
+    const d = document.createElement('div'); d.className = 'pt';
+    d.innerHTML = '<input aria-label="Nombre del punto"><select aria-label="Tipo"><option value="entrada">Entrada</option><option value="salida">Salida</option></select><button aria-label="Quitar">×</button>';
+    const [n, t, x] = d.children;
+    n.value = p.n; t.value = p.t;
+    n.oninput = () => { p.n = n.value; refresh(); };
+    t.onchange = () => { p.t = t.value; refresh(); };
+    x.onclick = () => { if (cfg.pts.length > 1) { cfg.pts.splice(i, 1); drawPts(); refresh(); } };
+    $('pts').appendChild(d);
+  });
+  refresh();
+}
+function refresh() {
+  cfg.url = $('url').value.trim(); cfg.re = $('re').value.trim() || '[A-Z]{3}\\d{2}[A-Z0-9]';
+  const keep = Math.min(cfg.me, cfg.pts.length - 1);
+  $('me').innerHTML = cfg.pts.map((p, i) => '<option value="' + i + '">' + (p.n || 'Sin nombre').replace(/</g, '&lt;') + ' (' + p.t + ')</option>').join('');
+  $('me').value = keep; cfg.me = keep;
+  $('share').value = location.origin + location.pathname + '#' + btoa(unescape(encodeURIComponent(JSON.stringify({ url: cfg.url, re: cfg.re, pts: cfg.pts }))));
+  sv('cfg', cfg);
+}
+$('addPt').onclick = () => { cfg.pts.push({ n: 'Punto ' + (cfg.pts.length + 1), t: 'entrada' }); drawPts(); };
+$('url').value = cfg.url; $('re').value = cfg.re;
+$('url').oninput = $('re').oninput = refresh;
+$('me').onchange = () => { cfg.me = +$('me').value; sv('cfg', cfg); };
+$('copy').onclick = async () => { try { await navigator.clipboard.writeText($('share').value); $('copy').textContent = 'Enlace copiado'; } catch(e) { $('share').select(); } };
+drawPts();
+
+// ---------- registro y envío ----------
+let log = ls('log', []), queue = ls('queue', []);
+function register(placa) {
+  const p = cfg.pts[cfg.me], row = { t: new Date().toISOString(), p: placa, m: p.t, n: p.n };
+  log.unshift(row); log = log.slice(0, 3000); queue.push(row); sv('log', log); sv('queue', queue);
+  flush();
+}
+async function flush() {
+  $('pend').textContent = queue.length ? queue.length + ' sin enviar' : '';
+  if (!cfg.url || !queue.length || flush.busy) return;
+  flush.busy = true;
+  const batch = queue.slice();
+  try {
+    await fetch(cfg.url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ rows: batch }) });
+    queue = queue.slice(batch.length); sv('queue', queue);
+  } catch(e) {}
+  flush.busy = false; $('pend').textContent = queue.length ? queue.length + ' sin enviar' : '';
+}
+setInterval(flush, 15000);
+
+$('exp').onclick = () => {
+  const L = ['Fecha;Hora;Placa;Movimiento;Punto'].concat(log.slice().reverse().map(r => {
+    const d = new Date(r.t); return [d.toLocaleDateString('es-CO'), d.toLocaleTimeString('es-CO'), r.p, r.m, r.n].join(';');
+  }));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\ufeff' + L.join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'registro-placas.csv'; a.click();
+};
+
+// ---------- captura continua ----------
+let running = false, busy = false, stream = null, worker = null, wl = null;
+const seen = {}, lastReg = {};
+
+$('go').onclick = async () => {
+  refresh();
+  const p = cfg.pts[cfg.me];
+  $('tg').textContent = p.t === 'entrada' ? 'Entrada' : 'Salida'; $('tg').className = 'tag ' + p.t; $('nm').textContent = p.n;
+  $('setup').style.display = 'none'; $('run').style.display = 'flex';
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false });
+    $('v').srcObject = stream; await $('v').play();
+  } catch(e) { $('st').textContent = 'No se pudo abrir la cámara. Revisa el permiso y que la página use https.'; return; }
+  try { wl = await navigator.wakeLock.request('screen'); } catch(e) {}
+  $('st').textContent = 'Preparando lector…';
+  if (!worker) {
+    worker = await Tesseract.createWorker('eng');
+    await worker.setParameters({ tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', tessedit_pageseg_mode: '7' });
+  }
+  running = true; $('st').textContent = 'Buscando placas…'; flush(); tick();
+};
+$('stop').onclick = () => {
+  running = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (wl) wl.release().catch(() => {});
+  $('run').style.display = 'none'; $('setup').style.display = 'block';
+};
+document.addEventListener('visibilitychange', async () => {
+  if (running && document.visibilityState === 'visible') { try { wl = await navigator.wakeLock.request('screen'); } catch(e) {} }
+});
+
+async function tick() {
+  if (!running) return;
+  if (!busy) {
+    busy = true;
+    try { await scan(); } catch(e) {}
+    busy = false;
+  }
+  setTimeout(tick, 250);
+}
+
+async function scan() {
+  const v = $('v'), W = v.videoWidth, H = v.videoHeight;
+  if (!W) return;
+  const sx = W * 0.1, sw = W * 0.8, sy = H * 0.36, sh = H * 0.28, k = Math.min(1, 720 / sw);
+  const c = document.createElement('canvas'); c.width = sw * k; c.height = sh * k;
+  const g = c.getContext('2d'); g.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  const im = g.getImageData(0, 0, c.width, c.height), d = im.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const y = Math.max(0, Math.min(255, (0.3 * d[i] + 0.59 * d[i+1] + 0.11 * d[i+2] - 128) * 1.6 + 128));
+    d[i] = d[i+1] = d[i+2] = y;
+  }
+  g.putImageData(im, 0, 0);
+  const { data } = await worker.recognize(c);
+  const t = (data.text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  let m; try { m = t.match(new RegExp(cfg.re)); } catch(e) { m = null; }
+  if (!m) return;
+  const p = m[0], now = Date.now();
+  seen[p] = (seen[p] || []).filter(x => now - x < 5000); seen[p].push(now);
+  if (seen[p].length < 2) return;                         // debe leerse 2 veces seguidas
+  if (lastReg[p] && now - lastReg[p] < 120000) return;    // no repite la misma placa en 2 min
+  lastReg[p] = now; register(p);
+  $('gd').classList.add('ok'); setTimeout(() => $('gd').classList.remove('ok'), 1200);
+  if (navigator.vibrate) navigator.vibrate(200);
+  $('last').innerHTML = p + '<small>' + new Date().toLocaleTimeString('es-CO') + '</small>';
+  $('st').textContent = 'Placa registrada. Buscando la siguiente…';
+}
+</script>
+</body>
+</html>
